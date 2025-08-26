@@ -145,8 +145,15 @@ class FilesService:
                 # 替換 Google 的 URL 為我們的代理 URL
                 proxy_upload_url = upload_url
                 if request_host:
+                    # 確保使用HTTPS協議
+                    if not request_host.startswith('https://'):
+                        if request_host.startswith('http://'):
+                            request_host = request_host.replace('http://', 'https://', 1)
+                        else:
+                            request_host = f"https://{request_host}"
+                    
                     # 原始: https://generativelanguage.googleapis.com/upload/v1beta/files?key=AIzaSyDc...&upload_id=xxx&upload_protocol=resumable
-                    # 替換為: http://request-host/upload/v1beta/files?key=sk-123456&upload_id=xxx&upload_protocol=resumable
+                    # 替換為: https://request-host/upload/v1beta/files?key=sk-123456&upload_id=xxx&upload_protocol=resumable
                     
                     # 先替換域名
                     proxy_upload_url = upload_url.replace(
