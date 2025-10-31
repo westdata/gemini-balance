@@ -31,6 +31,7 @@ async def upload_file_init(
     x_goog_upload_command: Optional[str] = Header(None),
     x_goog_upload_header_content_length: Optional[str] = Header(None),
     x_goog_upload_header_content_type: Optional[str] = Header(None),
+    x_session_id: Optional[str] = Header(None, alias="X-Session-Id"),  # 支持從請求頭傳遞 session_id
 ):
     """初始化文件上传"""
     logger.debug(f"Upload file request: {request.method=}, {request.url=}, {auth_token=}, {x_goog_upload_protocol=}, {x_goog_upload_command=}, {x_goog_upload_header_content_length=}, {x_goog_upload_header_content_type=}")
@@ -65,6 +66,11 @@ async def upload_file_init(
             headers["x-goog-upload-header-content-length"] = x_goog_upload_header_content_length
         if x_goog_upload_header_content_type:
             headers["x-goog-upload-header-content-type"] = x_goog_upload_header_content_type
+        
+        # 傳遞 session_id（如果從請求頭提供）
+        if x_session_id:
+            headers["x-session-id"] = x_session_id
+            logger.debug(f"Received session_id from header: {x_session_id}")
         
         # 调用服务
         files_service = await get_files_service()

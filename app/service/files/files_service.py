@@ -59,38 +59,33 @@ class FilesService:
             Tuple[Dict[str, Any], Dict[str, str]]: (响应体, 响应头)
         """
         try:
-            # 從請求體中解析文件信息和 session_id
-            # 支持三種情況：
-            # 1. config 為空 {} -> request_data 可能為空字典或 None
-            # 2. config 只有 session_id -> request_data = {"session_id": "xxx"}
-            # 3. config 有 session_id 和其他配置項 -> request_data = {"session_id": "xxx", "mime_type": "...", "displayName": "..."}
+            # 從請求頭讀取 session_id（避免客戶端庫驗證問題）
+            session_id = headers.get("x-session-id") or headers.get("X-Session-Id")
+            
+            # 從請求體中解析文件信息（僅提取 displayName，不處理 session_id）
             display_name = ""
-            session_id = None
-            request_data = None
             if body:
                 try:
                     request_data = json.loads(body)
                     # 確保 request_data 是字典類型
-                    if not isinstance(request_data, dict):
-                        logger.warning(f"Request body is not a dictionary: {type(request_data)}, treating as empty")
-                        request_data = {}
-                    
-                    # 提取 displayName（可能不存在）
-                    display_name = request_data.get("displayName", "")
-                    
-                    # 提取 session_id，如果不存在或為空字符串則為 None
-                    session_id = request_data.get("session_id") or None
-                    if session_id and not isinstance(session_id, str):
-                        logger.warning(f"Invalid session_id type: {type(session_id)}, ignoring")
-                        session_id = None
-                    
-                    logger.debug(f"Parsed request body: displayName={display_name}, session_id={session_id}, other_keys={[k for k in request_data.keys() if k not in ['displayName', 'session_id']]}")
+                    if isinstance(request_data, dict):
+                        display_name = request_data.get("displayName", "")
+                        logger.debug(f"Parsed request body: displayName={display_name}")
+                    else:
+                        logger.warning(f"Request body is not a dictionary: {type(request_data)}")
                 except json.JSONDecodeError as e:
-                    logger.debug(f"Failed to parse request body as JSON: {e}, treating as empty")
-                    request_data = None
+                    logger.debug(f"Failed to parse request body as JSON: {e}")
                 except Exception as e:
-                    logger.debug(f"Failed to parse request body: {e}, treating as empty")
-                    request_data = None
+                    logger.debug(f"Failed to parse request body: {e}")
+            
+            # 驗證 session_id
+            if session_id:
+                if not isinstance(session_id, str) or not session_id.strip():
+                    logger.warning(f"Invalid session_id: {session_id}, ignoring")
+                    session_id = None
+                else:
+                    session_id = session_id.strip()
+                    logger.debug(f"Using session_id from header: {session_id}")
             
             # 使用 session_id 控制 API key
             # 如果提供了有效的 session_id，嘗試復用該會話的 API key
@@ -118,36 +113,8 @@ class FilesService:
             if not api_key:
                 raise HTTPException(status_code=503, detail="No available API keys")
             
-            # 準備轉發的請求體
-            # 只有在提供了 session_id 且請求體包含 session_id 時才移除它
-            # 移除 session_id 後，保留其他所有字段（如 mime_type, displayName 等）
+            # 轉發請求體（不需要修改，因為 session_id 不在請求體中）
             forward_body = body
-            if request_data is not None and session_id and "session_id" in request_data:
-                try:
-                    # 創建副本以避免修改原始數據
-                    clean_request_data = request_data.copy()
-                    clean_request_data.pop("session_id", None)  # 移除 session_id
-                    
-                    # 如果移除 session_id 後字典為空，使用空字典 {}
-                    # 否則序列化為 JSON
-                    if clean_request_data:
-                        forward_body = json.dumps(clean_request_data).encode()
-                        logger.debug(f"Removed session_id from request body, keeping other fields: {list(clean_request_data.keys())}")
-                    else:
-                        # 空字典，發送空 JSON 對象
-                        forward_body = b"{}"
-                        logger.debug("Removed session_id from request body, body is now empty dict")
-                except Exception as e:
-                    logger.warning(f"Failed to remove session_id from request body: {e}, using original body")
-                    # 如果處理失敗，使用原始請求體
-                    forward_body = body
-            elif request_data is not None and isinstance(request_data, dict):
-                # 即使沒有 session_id，也要確保 request_data 是有效的字典
-                # 這種情況下直接使用原始 body，因為不需要修改
-                logger.debug(f"No session_id to remove, forwarding original body with keys: {list(request_data.keys())}")
-            else:
-                # request_data 為 None 或不是字典，使用原始 body
-                logger.debug("No request data to process, forwarding original body")
             
             # 转发请求到真实的 Gemini API
             async with AsyncClient() as client:
