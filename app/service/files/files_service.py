@@ -59,12 +59,95 @@ class FilesService:
             Tuple[Dict[str, Any], Dict[str, str]]: (响应体, 响应头)
         """
         try:
-            # 获取可用的 API key
-            key_manager = await self._get_key_manager()
-            api_key = await key_manager.get_next_key()
+            # 從請求體中解析文件信息和 session_id
+            # 支持三種情況：
+            # 1. config 為空 {} -> request_data 可能為空字典或 None
+            # 2. config 只有 session_id -> request_data = {"session_id": "xxx"}
+            # 3. config 有 session_id 和其他配置項 -> request_data = {"session_id": "xxx", "mime_type": "...", "displayName": "..."}
+            display_name = ""
+            session_id = None
+            request_data = None
+            if body:
+                try:
+                    request_data = json.loads(body)
+                    # 確保 request_data 是字典類型
+                    if not isinstance(request_data, dict):
+                        logger.warning(f"Request body is not a dictionary: {type(request_data)}, treating as empty")
+                        request_data = {}
+                    
+                    # 提取 displayName（可能不存在）
+                    display_name = request_data.get("displayName", "")
+                    
+                    # 提取 session_id，如果不存在或為空字符串則為 None
+                    session_id = request_data.get("session_id") or None
+                    if session_id and not isinstance(session_id, str):
+                        logger.warning(f"Invalid session_id type: {type(session_id)}, ignoring")
+                        session_id = None
+                    
+                    logger.debug(f"Parsed request body: displayName={display_name}, session_id={session_id}, other_keys={[k for k in request_data.keys() if k not in ['displayName', 'session_id']]}")
+                except json.JSONDecodeError as e:
+                    logger.debug(f"Failed to parse request body as JSON: {e}, treating as empty")
+                    request_data = None
+                except Exception as e:
+                    logger.debug(f"Failed to parse request body: {e}, treating as empty")
+                    request_data = None
+            
+            # 使用 session_id 控制 API key
+            # 如果提供了有效的 session_id，嘗試復用該會話的 API key
+            if session_id:
+                async with _upload_sessions_lock:
+                    # 查找該 session_id 對應的 API key
+                    api_key = None
+                    for upload_id, session_info in _upload_sessions.items():
+                        if session_info.get("session_id") == session_id:
+                            api_key = session_info["api_key"]
+                            logger.info(f"Reusing API key for session {session_id}")
+                            break
+                    
+                    if not api_key:
+                        # 新會話，獲取新的 key
+                        key_manager = await self._get_key_manager()
+                        api_key = await key_manager.get_next_key()
+                        logger.info(f"New session {session_id}, using new API key")
+            else:
+                # 沒有 session_id，保持原有流程：獲取新的 key
+                key_manager = await self._get_key_manager()
+                api_key = await key_manager.get_next_key()
+                logger.debug("No session_id provided, using default key rotation")
             
             if not api_key:
                 raise HTTPException(status_code=503, detail="No available API keys")
+            
+            # 準備轉發的請求體
+            # 只有在提供了 session_id 且請求體包含 session_id 時才移除它
+            # 移除 session_id 後，保留其他所有字段（如 mime_type, displayName 等）
+            forward_body = body
+            if request_data is not None and session_id and "session_id" in request_data:
+                try:
+                    # 創建副本以避免修改原始數據
+                    clean_request_data = request_data.copy()
+                    clean_request_data.pop("session_id", None)  # 移除 session_id
+                    
+                    # 如果移除 session_id 後字典為空，使用空字典 {}
+                    # 否則序列化為 JSON
+                    if clean_request_data:
+                        forward_body = json.dumps(clean_request_data).encode()
+                        logger.debug(f"Removed session_id from request body, keeping other fields: {list(clean_request_data.keys())}")
+                    else:
+                        # 空字典，發送空 JSON 對象
+                        forward_body = b"{}"
+                        logger.debug("Removed session_id from request body, body is now empty dict")
+                except Exception as e:
+                    logger.warning(f"Failed to remove session_id from request body: {e}, using original body")
+                    # 如果處理失敗，使用原始請求體
+                    forward_body = body
+            elif request_data is not None and isinstance(request_data, dict):
+                # 即使沒有 session_id，也要確保 request_data 是有效的字典
+                # 這種情況下直接使用原始 body，因為不需要修改
+                logger.debug(f"No session_id to remove, forwarding original body with keys: {list(request_data.keys())}")
+            else:
+                # request_data 為 None 或不是字典，使用原始 body
+                logger.debug("No request data to process, forwarding original body")
             
             # 转发请求到真实的 Gemini API
             async with AsyncClient() as client:
@@ -85,7 +168,7 @@ class FilesService:
                 response = await client.post(
                     "https://generativelanguage.googleapis.com/upload/v1beta/files",
                     headers=forward_headers,
-                    content=body,
+                    content=forward_body,  # 使用清理後的請求體
                     params={"key": api_key}
                 )
                 
@@ -108,14 +191,6 @@ class FilesService:
                 # 解析响应 - 初始化响应可能是空的
                 response_data = {}
                 
-                # 從請求體中解析文件信息（如果有）
-                display_name = ""
-                if body:
-                    try:
-                        request_data = json.loads(body)
-                        display_name = request_data.get("displayName", "")
-                    except Exception:
-                        pass
                 # 從 upload URL 中提取 upload_id
                 import urllib.parse
                 parsed_url = urllib.parse.urlparse(upload_url)
@@ -128,13 +203,17 @@ class FilesService:
                         _upload_sessions[upload_id] = {
                             "api_key": api_key,
                             "user_token": user_token,
+                            "session_id": session_id,  # 保存 session_id（可能為 None）
                             "display_name": display_name,
                             "mime_type": headers.get("x-goog-upload-header-content-type", "application/octet-stream"),
                             "size_bytes": int(headers.get("x-goog-upload-header-content-length", "0")),
                             "created_at": datetime.now(timezone.utc),
                             "upload_url": upload_url
                         }
-                        logger.info(f"Stored upload session for upload_id={upload_id}: api_key={redact_key_for_logging(api_key)}")
+                        if session_id:
+                            logger.info(f"Stored upload session for upload_id={upload_id}: api_key={redact_key_for_logging(api_key)}, session_id={session_id}")
+                        else:
+                            logger.debug(f"Stored upload session for upload_id={upload_id}: api_key={redact_key_for_logging(api_key)} (no session_id)")
                         logger.debug(f"Total active sessions: {len(_upload_sessions)}")
                 else:
                     logger.warning(f"No upload_id found in upload URL: {upload_url}")
