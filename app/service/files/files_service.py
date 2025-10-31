@@ -59,7 +59,8 @@ class FilesService:
             Tuple[Dict[str, Any], Dict[str, str]]: (响应体, 响应头)
         """
         try:
-            # 從請求頭讀取 session_id（避免客戶端庫驗證問題）
+            # 從請求頭讀取 session_id（由路由層從查詢參數轉換而來）
+            # session_id 僅用於 gemini-balance 內部控制 API key，不會傳遞給 Google API
             session_id = headers.get("x-session-id") or headers.get("X-Session-Id")
             
             # 從請求體中解析文件信息（僅提取 displayName，不處理 session_id）
