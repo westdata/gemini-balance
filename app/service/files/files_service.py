@@ -61,9 +61,7 @@ class FilesService:
         try:
             # 從請求頭讀取 session_id（由路由層從查詢參數轉換而來）
             # session_id 僅用於 gemini-balance 內部控制 API key，不會傳遞給 Google API
-            logger.debug(f"Received headers in initialize_upload: {headers}")
             session_id = headers.get("x-session-id") or headers.get("X-Session-Id")
-            logger.info(f"Extracted session_id from headers: {session_id}")
             
             # 從請求體中解析文件信息（僅提取 displayName，不處理 session_id）
             display_name = ""

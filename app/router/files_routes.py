@@ -35,9 +35,7 @@ async def upload_file_init(
     session_id: Optional[str] = Query(None, description="Session ID for grouping files with the same API key"),  # 也支持從查詢參數傳遞
 ):
     """初始化文件上传"""
-    logger.info(f"Upload file request headers: x_session_id={x_session_id}, session_id={session_id}")
     logger.debug(f"Upload file request: {request.method=}, {request.url=}, {auth_token=}, {x_goog_upload_protocol=}, {x_goog_upload_command=}, {x_goog_upload_header_content_length=}, {x_goog_upload_header_content_type=}")
-    logger.debug(f"All request headers: {dict(request.headers)}")
     
     # 檢查是否是實際的上傳請求（有 upload_id）
     if request.query_params.get("upload_id") and x_goog_upload_command in ["upload", "upload, finalize"]:
@@ -75,7 +73,7 @@ async def upload_file_init(
         session_id_value = x_session_id or session_id
         if session_id_value:
             headers["x-session-id"] = session_id_value
-            logger.info(f"Received session_id: {session_id_value} (from {'header' if x_session_id else 'query param'})")
+            logger.info(f"Received session_id: {session_id_value} (from {'header' if x_session_id else 'query'})")
         
         # 调用服务
         files_service = await get_files_service()
