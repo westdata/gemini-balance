@@ -10,6 +10,10 @@ class FileUploadConfig(BaseModel):
     """文件上传配置"""
     mime_type: Optional[str] = Field(None, description="MIME 类型")
     display_name: Optional[str] = Field(None, description="显示名称，最多40个字符")
+    session_id: Optional[str] = Field(None, description="会话ID，用于关联同一批次的文件上传")
+    
+    class Config:
+        extra = "ignore"  # 忽略额外字段，而不是报错
 
 
 class CreateFileRequest(BaseModel):
