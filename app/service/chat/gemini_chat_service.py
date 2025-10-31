@@ -340,15 +340,45 @@ class GeminiChatService:
         file_names = _extract_file_references(request.model_dump().get("contents", []))
         if file_names:
             logger.info(f"Request contains file references: {file_names}")
-            file_api_key = await get_file_api_key(file_names[0])
-            if file_api_key:
-                logger.info(
-                    f"Found API key for file {file_names[0]}: {redact_key_for_logging(file_api_key)}"
-                )
-                api_key = file_api_key  # 使用文件的 API key
+            
+            # 獲取所有文件的 API key
+            file_api_keys = {}
+            for file_name in file_names:
+                file_api_key = await get_file_api_key(file_name)
+                if file_api_key:
+                    file_api_keys[file_name] = file_api_key
+                    logger.debug(
+                        f"Found API key for file {file_name}: {redact_key_for_logging(file_api_key)}"
+                    )
+                else:
+                    logger.warning(
+                        f"No API key found for file {file_name}, using default key: {redact_key_for_logging(api_key)}"
+                    )
+            
+            # 如果找到了文件的 API key，檢查它們是否一致
+            if file_api_keys:
+                # 獲取所有唯一的 API key
+                unique_api_keys = set(file_api_keys.values())
+                
+                if len(unique_api_keys) == 1:
+                    # 所有文件使用相同的 API key，使用那個 key
+                    api_key = list(unique_api_keys)[0]
+                    logger.info(
+                        f"All {len(file_names)} files use the same API key: {redact_key_for_logging(api_key)}"
+                    )
+                else:
+                    # 文件使用不同的 API key，這會導致權限錯誤
+                    # 使用第一個文件的 API key，但記錄警告
+                    api_key = file_api_keys[file_names[0]]
+                    logger.warning(
+                        f"Files use different API keys! Found {len(unique_api_keys)} unique keys. "
+                        f"Using API key from first file ({file_names[0]}: {redact_key_for_logging(api_key)}). "
+                        f"This may cause permission errors for other files. "
+                        f"Files and their keys: {[(f, redact_key_for_logging(k)) for f, k in file_api_keys.items()]}"
+                    )
             else:
                 logger.warning(
-                    f"No API key found for file {file_names[0]}, using default key: {redact_key_for_logging(api_key)}"
+                    f"No API keys found for any files, using default key: {redact_key_for_logging(api_key)}"
                 )
 
         payload = _build_payload(model, request)

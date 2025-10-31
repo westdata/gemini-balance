@@ -31,6 +31,8 @@ async def upload_file_init(
     x_goog_upload_command: Optional[str] = Header(None),
     x_goog_upload_header_content_length: Optional[str] = Header(None),
     x_goog_upload_header_content_type: Optional[str] = Header(None),
+    x_session_id: Optional[str] = Header(None, alias="X-Session-Id"),  # 支持從請求頭傳遞 session_id
+    session_id: Optional[str] = Query(None, description="Session ID for grouping files with the same API key"),  # 也支持從查詢參數傳遞
 ):
     """初始化文件上传"""
     logger.debug(f"Upload file request: {request.method=}, {request.url=}, {auth_token=}, {x_goog_upload_protocol=}, {x_goog_upload_command=}, {x_goog_upload_header_content_length=}, {x_goog_upload_header_content_type=}")
@@ -65,6 +67,13 @@ async def upload_file_init(
             headers["x-goog-upload-header-content-length"] = x_goog_upload_header_content_length
         if x_goog_upload_header_content_type:
             headers["x-goog-upload-header-content-type"] = x_goog_upload_header_content_type
+        
+        # 傳遞 session_id（優先從請求頭，其次從查詢參數）
+        # 僅用於 gemini-balance 內部控制 API key，轉發給 Google API 時會被移除
+        session_id_value = x_session_id or session_id
+        if session_id_value:
+            headers["x-session-id"] = session_id_value
+            logger.info(f"Received session_id: {session_id_value} (from {'header' if x_session_id else 'query param'})")
         
         # 调用服务
         files_service = await get_files_service()
