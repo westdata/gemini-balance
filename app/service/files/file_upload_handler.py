@@ -2,6 +2,7 @@
 文件上传处理器
 处理 Google 的可恢复上传协议
 """
+import json
 from typing import Optional
 from datetime import datetime, timezone, timedelta
 
@@ -151,9 +152,29 @@ class FileUploadHandler:
                         else:
                             logger.warning(f"Missing real_file_name or files_service: real_file_name={real_file_name}, files_service={files_service}")
 
-                        # 返回完整的文件信息
+                        # 返回完整的文件信息，替換 Google URI 為代理 URI
+                        # 這樣客戶端後續調用 generateContent 時會使用代理 URI
+                        modified_content = response.content
+                        try:
+                            # 從請求中獲取代理的 base URL
+                            scheme = request.url.scheme or "https"
+                            host = request.headers.get("host") or request.url.netloc
+                            proxy_base_url = f"{scheme}://{host}"
+                            
+                            # 替換響應中的 Google URI 為代理 URI
+                            google_base = "https://generativelanguage.googleapis.com"
+                            file_uri = response_data.get("file", {}).get("uri", "")
+                            if google_base in file_uri:
+                                response_data["file"]["uri"] = file_uri.replace(
+                                    google_base, proxy_base_url.rstrip('/')
+                                )
+                                modified_content = json.dumps(response_data).encode('utf-8')
+                                logger.info(f"Replaced URI in response: {file_uri} -> {response_data['file']['uri']}")
+                        except Exception as e:
+                            logger.warning(f"Failed to replace URI in response: {e}")
+                        
                         return Response(
-                            content=response.content,
+                            content=modified_content,
                             status_code=response.status_code,
                             headers=dict(response.headers)
                         )
