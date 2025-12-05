@@ -93,20 +93,31 @@ class FilesService:
             # 使用 session_id 控制 API key
             # 如果提供了有效的 session_id，嘗試復用該會話的 API key
             if session_id:
+                api_key = None
+                
+                # 1. 先從內存緩存查找
                 async with _upload_sessions_lock:
-                    # 查找該 session_id 對應的 API key
-                    api_key = None
                     for upload_id, session_info in _upload_sessions.items():
                         if session_info.get("session_id") == session_id:
                             api_key = session_info["api_key"]
-                            logger.info(f"Reusing API key for session {session_id}")
+                            logger.info(f"Reusing API key for session {session_id} (from memory)")
                             break
-                    
-                    if not api_key:
-                        # 新會話，獲取新的 key
-                        key_manager = await self._get_key_manager()
-                        api_key = await key_manager.get_next_key()
-                        logger.info(f"New session {session_id}, using new API key")
+                
+                # 2. 內存沒有，從數據庫查找（解決並發上傳的競態條件）
+                if not api_key:
+                    try:
+                        db_session = await db_services.get_upload_session_by_session_id(session_id)
+                        if db_session:
+                            api_key = db_session["api_key"]
+                            logger.info(f"Reusing API key for session {session_id} (from DB)")
+                    except Exception as e:
+                        logger.warning(f"Failed to query session from DB: {e}")
+                
+                # 3. 都沒有，獲取新的 key
+                if not api_key:
+                    key_manager = await self._get_key_manager()
+                    api_key = await key_manager.get_next_key()
+                    logger.info(f"New session {session_id}, using new API key: {redact_key_for_logging(api_key)}")
             else:
                 # 沒有 session_id，保持原有流程：獲取新的 key
                 key_manager = await self._get_key_manager()
