@@ -155,6 +155,7 @@ class FileUploadHandler:
                         # 返回完整的文件信息，替換 Google URI 為代理 URI
                         # 這樣客戶端後續調用 generateContent 時會使用代理 URI
                         modified_content = response.content
+                        response_headers = dict(response.headers)
                         try:
                             # 從請求中獲取代理的 base URL
                             scheme = request.url.scheme or "https"
@@ -169,6 +170,8 @@ class FileUploadHandler:
                                     google_base, proxy_base_url.rstrip('/')
                                 )
                                 modified_content = json.dumps(response_data).encode('utf-8')
+                                # 更新 Content-Length 以匹配修改後的內容
+                                response_headers["content-length"] = str(len(modified_content))
                                 logger.info(f"Replaced URI in response: {file_uri} -> {response_data['file']['uri']}")
                         except Exception as e:
                             logger.warning(f"Failed to replace URI in response: {e}")
@@ -176,7 +179,7 @@ class FileUploadHandler:
                         return Response(
                             content=modified_content,
                             status_code=response.status_code,
-                            headers=dict(response.headers)
+                            headers=response_headers
                         )
                     except Exception as e:
                         logger.error(f"Failed to create file record: {str(e)}", exc_info=True)
