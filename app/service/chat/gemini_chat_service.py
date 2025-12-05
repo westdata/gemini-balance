@@ -30,6 +30,44 @@ def _has_image_parts(contents: List[Dict[str, Any]]) -> bool:
     return False
 
 
+def _replace_proxy_uris_with_google_uris(contents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    將內容中的代理 URI 替換為 Google URI
+    發送到 Google API 前需要使用原始的 Google URI
+    """
+    import copy
+    google_base = "https://generativelanguage.googleapis.com"
+    
+    # 深拷貝避免修改原始數據
+    modified_contents = copy.deepcopy(contents)
+    
+    for content in modified_contents:
+        if "parts" not in content:
+            continue
+        for part in content["parts"]:
+            if not isinstance(part, dict) or "fileData" not in part:
+                continue
+            file_data = part["fileData"]
+            if "fileUri" not in file_data:
+                continue
+            
+            file_uri = file_data["fileUri"]
+            # 檢查是否是代理 URI（不是 Google 的原始 URI）
+            if google_base not in file_uri:
+                # 提取文件路徑部分 (v1beta/files/xxx 或 files/xxx)
+                match = re.search(r"(v1beta/)?(files/[^/\?\s]+)", file_uri)
+                if match:
+                    file_path = match.group(0)
+                    # 確保路徑以 v1beta/ 開頭
+                    if not file_path.startswith("v1beta/"):
+                        file_path = f"v1beta/{file_path}"
+                    new_uri = f"{google_base}/{file_path}"
+                    file_data["fileUri"] = new_uri
+                    logger.debug(f"Replaced proxy URI with Google URI: {file_uri} -> {new_uri}")
+    
+    return modified_contents
+
+
 def _extract_file_references(contents: List[Dict[str, Any]]) -> List[str]:
     """從內容中提取文件引用"""
     file_names = []
@@ -43,12 +81,13 @@ def _extract_file_references(contents: List[Dict[str, Any]]) -> List[str]:
                     continue
                 file_uri = file_data["fileUri"]
                 # 從 URI 中提取文件名
-                # 格式: {BASE_URL}/files/{file_id}
-                match = re.match(
-                    rf"{re.escape(settings.BASE_URL)}/(files/[^/\?]+)", file_uri
-                )
+                # 支持多種格式:
+                # - {BASE_URL}/files/{file_id}
+                # - {BASE_URL}/v1beta/files/{file_id}
+                # - http/https 都支持
+                match = re.search(r"(files/[^/\?\s]+)", file_uri)
                 if not match:
-                    logger.warning(f"Invalid file URI: {file_uri}")
+                    logger.warning(f"Invalid file URI (no files/ pattern): {file_uri}")
                     continue
                 file_id = match.group(1)
                 file_names.append(file_id)
@@ -296,6 +335,10 @@ def _build_payload(model: str, request: GeminiRequest) -> Dict[str, Any]:
                 payload["generationConfig"]["thinkingConfig"] = {
                     "thinkingBudget": settings.THINKING_BUDGET_MAP.get(model, 1000)
                 }
+
+    # 將代理 URI 替換為 Google URI（發送到 Google API 前）
+    if "contents" in payload:
+        payload["contents"] = _replace_proxy_uris_with_google_uris(payload["contents"])
 
     return payload
 
