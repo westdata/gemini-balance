@@ -113,11 +113,26 @@ class FilesService:
                     except Exception as e:
                         logger.warning(f"Failed to query session from DB: {e}")
                 
-                # 3. 都沒有，獲取新的 key
+                # 3. 都沒有，獲取新的 key，並立即存數據庫防止競態條件
                 if not api_key:
                     key_manager = await self._get_key_manager()
                     api_key = await key_manager.get_next_key()
                     logger.info(f"New session {session_id}, using new API key: {redact_key_for_logging(api_key)}")
+                    
+                    # 立即存數據庫，防止並發請求獲取不同的 key
+                    # 使用臨時的 upload_id，後面會更新
+                    try:
+                        temp_upload_id = f"pending_{session_id}_{datetime.now(timezone.utc).timestamp()}"
+                        await db_services.create_upload_session(
+                            upload_id=temp_upload_id,
+                            api_key=api_key,
+                            user_token=user_token,
+                            session_id=session_id,
+                            display_name=display_name,
+                        )
+                        logger.debug(f"Pre-stored session to DB: session_id={session_id}, api_key={redact_key_for_logging(api_key)}")
+                    except Exception as e:
+                        logger.warning(f"Failed to pre-store session to DB: {e}")
             else:
                 # 沒有 session_id，保持原有流程：獲取新的 key
                 key_manager = await self._get_key_manager()
