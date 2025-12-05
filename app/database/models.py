@@ -127,3 +127,34 @@ class FileRecord(Base):
         if expiration_time.tzinfo is None:
             expiration_time = expiration_time.replace(tzinfo=datetime.timezone.utc)
         return datetime.datetime.now(datetime.timezone.utc) > expiration_time
+
+
+class UploadSession(Base):
+    """
+    上传会话表，用于存储文件上传过程中的临时信息
+    解决多 Worker 环境下内存不共享的问题
+    """
+    __tablename__ = "t_upload_sessions"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    
+    # 会话标识
+    upload_id = Column(String(255), unique=True, nullable=False, index=True, comment="Google 返回的 upload_id")
+    session_id = Column(String(255), nullable=True, index=True, comment="用户提供的 session_id，用于复用 API key")
+    
+    # API 相关
+    api_key = Column(String(100), nullable=False, comment="分配的 API Key")
+    user_token = Column(String(100), nullable=True, comment="用户的认证 token")
+    
+    # 文件信息
+    display_name = Column(String(255), nullable=True, comment="文件显示名称")
+    mime_type = Column(String(100), nullable=True, comment="MIME 类型")
+    size_bytes = Column(BigInteger, nullable=True, comment="文件大小")
+    upload_url = Column(Text, nullable=True, comment="Google 返回的原始上传 URL")
+    
+    # 时间戳
+    created_at = Column(DateTime, nullable=False, default=datetime.datetime.utcnow, comment="创建时间")
+    expires_at = Column(DateTime, nullable=False, comment="过期时间（1小时后）")
+    
+    def __repr__(self):
+        return f"<UploadSession(upload_id='{self.upload_id}', session_id='{self.session_id}')>"

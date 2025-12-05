@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Union
 from sqlalchemy import asc, delete, desc, func, insert, select, update
 
 from app.database.connection import database
-from app.database.models import ErrorLog, FileRecord, FileState, RequestLog, Settings
+from app.database.models import ErrorLog, FileRecord, FileState, RequestLog, Settings, UploadSession
 from app.log.logger import get_database_logger
 from app.utils.helpers import redact_key_for_logging
 
@@ -802,4 +802,121 @@ async def get_file_api_key(name: str) -> Optional[str]:
         return result["api_key"] if result else None
     except Exception as e:
         logger.error(f"Failed to get file API key: {str(e)}")
+        raise
+
+
+# ==================== Upload Session 相关函数 ====================
+
+async def create_upload_session(
+    upload_id: str,
+    api_key: str,
+    user_token: str,
+    session_id: Optional[str] = None,
+    display_name: Optional[str] = None,
+    mime_type: Optional[str] = None,
+    size_bytes: Optional[int] = None,
+    upload_url: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    创建上传会话记录
+
+    Args:
+        upload_id: Google 返回的 upload_id
+        api_key: 分配的 API Key
+        user_token: 用户的认证 token
+        session_id: 用户提供的 session_id
+        display_name: 文件显示名称
+        mime_type: MIME 类型
+        size_bytes: 文件大小
+        upload_url: Google 返回的原始上传 URL
+
+    Returns:
+        Dict[str, Any]: 创建的会话记录
+    """
+    try:
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(hours=1)
+        
+        query = insert(UploadSession).values(
+            upload_id=upload_id,
+            session_id=session_id,
+            api_key=api_key,
+            user_token=user_token,
+            display_name=display_name,
+            mime_type=mime_type,
+            size_bytes=size_bytes,
+            upload_url=upload_url,
+            created_at=now,
+            expires_at=expires_at,
+        )
+        await database.execute(query)
+        
+        logger.debug(f"Created upload session: upload_id={upload_id}, session_id={session_id}")
+        return await get_upload_session_by_id(upload_id)
+    except Exception as e:
+        logger.error(f"Failed to create upload session: {str(e)}")
+        raise
+
+
+async def get_upload_session_by_id(upload_id: str) -> Optional[Dict[str, Any]]:
+    """
+    根据 upload_id 获取上传会话
+
+    Args:
+        upload_id: Google 返回的 upload_id
+
+    Returns:
+        Optional[Dict[str, Any]]: 会话记录，如果不存在或已过期则返回 None
+    """
+    try:
+        query = select(UploadSession).where(
+            (UploadSession.upload_id == upload_id)
+            & (UploadSession.expires_at > datetime.now(timezone.utc))
+        )
+        result = await database.fetch_one(query)
+        return dict(result) if result else None
+    except Exception as e:
+        logger.error(f"Failed to get upload session by id {upload_id}: {str(e)}")
+        raise
+
+
+async def get_upload_session_by_session_id(session_id: str) -> Optional[Dict[str, Any]]:
+    """
+    根据 session_id 获取最新的上传会话（用于复用 API key）
+
+    Args:
+        session_id: 用户提供的 session_id
+
+    Returns:
+        Optional[Dict[str, Any]]: 会话记录，如果不存在或已过期则返回 None
+    """
+    try:
+        query = select(UploadSession).where(
+            (UploadSession.session_id == session_id)
+            & (UploadSession.expires_at > datetime.now(timezone.utc))
+        ).order_by(desc(UploadSession.created_at)).limit(1)
+        result = await database.fetch_one(query)
+        return dict(result) if result else None
+    except Exception as e:
+        logger.error(f"Failed to get upload session by session_id {session_id}: {str(e)}")
+        raise
+
+
+async def cleanup_expired_upload_sessions() -> int:
+    """
+    清理过期的上传会话
+
+    Returns:
+        int: 删除的会话数量
+    """
+    try:
+        query = delete(UploadSession).where(
+            UploadSession.expires_at < datetime.now(timezone.utc)
+        )
+        result = await database.execute(query)
+        if result > 0:
+            logger.info(f"Cleaned up {result} expired upload sessions")
+        return result
+    except Exception as e:
+        logger.error(f"Failed to cleanup expired upload sessions: {str(e)}")
         raise

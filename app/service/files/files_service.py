@@ -19,10 +19,12 @@ from app.service.key.key_manager import get_key_manager_instance
 
 logger = get_files_logger()
 
-# 全局上傳會話存儲
+# 全局上傳會話存儲（內存緩存，用於單 Worker 環境的快速查找）
 _upload_sessions: Dict[str, Dict[str, Any]] = {}
 _upload_sessions_lock = asyncio.Lock()
 
+# 注意：為了支持多 Worker 環境，會話信息也會存儲到數據庫中
+# 查找順序：1. 內存緩存 → 2. 數據庫
 
 class FilesService:
     """文件管理服务类"""
@@ -166,23 +168,39 @@ class FilesService:
                 upload_id = query_params.get('upload_id', [None])[0]
                 
                 if upload_id:
-                    # 儲存上傳會話信息，使用 upload_id 作為 key
+                    mime_type = headers.get("x-goog-upload-header-content-type", "application/octet-stream")
+                    size_bytes = int(headers.get("x-goog-upload-header-content-length", "0"))
+                    
+                    # 1. 儲存到內存緩存（用於單 Worker 環境的快速查找）
                     async with _upload_sessions_lock:
                         _upload_sessions[upload_id] = {
                             "api_key": api_key,
                             "user_token": user_token,
-                            "session_id": session_id,  # 保存 session_id（可能為 None）
+                            "session_id": session_id,
                             "display_name": display_name,
-                            "mime_type": headers.get("x-goog-upload-header-content-type", "application/octet-stream"),
-                            "size_bytes": int(headers.get("x-goog-upload-header-content-length", "0")),
+                            "mime_type": mime_type,
+                            "size_bytes": size_bytes,
                             "created_at": datetime.now(timezone.utc),
                             "upload_url": upload_url
                         }
-                        if session_id:
-                            logger.info(f"Stored upload session for upload_id={upload_id}: api_key={redact_key_for_logging(api_key)}, session_id={session_id}")
-                        else:
-                            logger.debug(f"Stored upload session for upload_id={upload_id}: api_key={redact_key_for_logging(api_key)} (no session_id)")
-                        logger.debug(f"Total active sessions: {len(_upload_sessions)}")
+                        logger.debug(f"Stored upload session in memory: upload_id={upload_id}")
+                    
+                    # 2. 同時儲存到數據庫（用於多 Worker 環境）
+                    try:
+                        await db_services.create_upload_session(
+                            upload_id=upload_id,
+                            api_key=api_key,
+                            user_token=user_token,
+                            session_id=session_id,
+                            display_name=display_name,
+                            mime_type=mime_type,
+                            size_bytes=size_bytes,
+                            upload_url=upload_url
+                        )
+                        logger.info(f"Stored upload session in DB: upload_id={upload_id}, session_id={session_id}, api_key={redact_key_for_logging(api_key)}")
+                    except Exception as e:
+                        # 數據庫寫入失敗不應阻止上傳流程，但需要記錄警告
+                        logger.warning(f"Failed to store upload session in DB (will use memory only): {e}")
                 else:
                     logger.warning(f"No upload_id found in upload URL: {upload_url}")
                 
@@ -252,28 +270,48 @@ class FilesService:
             logger.error(f"Error cleaning up upload sessions: {str(e)}")
     
     async def get_upload_session(self, key: str) -> Optional[Dict[str, Any]]:
-        """獲取上傳會話信息（支持 upload_id 或完整 URL）"""
+        """
+        獲取上傳會話信息（支持 upload_id 或完整 URL）
+        
+        查找順序：1. 內存緩存 → 2. 數據庫
+        這樣可以支持多 Worker 環境
+        """
+        # 提取 upload_id
+        upload_id = key
+        if key.startswith("http"):
+            import urllib.parse
+            parsed_url = urllib.parse.urlparse(key)
+            query_params = urllib.parse.parse_qs(parsed_url.query)
+            upload_id = query_params.get('upload_id', [key])[0]
+        
+        # 1. 先嘗試從內存緩存查找
         async with _upload_sessions_lock:
-            # 先嘗試直接查找
-            session = _upload_sessions.get(key)
+            session = _upload_sessions.get(upload_id)
             if session:
-                logger.debug(f"Found session by direct key {redact_key_for_logging(key)}")
+                logger.debug(f"Found session in memory: upload_id={upload_id}")
                 return session
-            
-            # 如果是 URL，嘗試提取 upload_id
-            if key.startswith("http"):
-                import urllib.parse
-                parsed_url = urllib.parse.urlparse(key)
-                query_params = urllib.parse.parse_qs(parsed_url.query)
-                upload_id = query_params.get('upload_id', [None])[0]
-                if upload_id:
-                    session = _upload_sessions.get(upload_id)
-                    if session:
-                        logger.debug(f"Found session by upload_id {upload_id} from URL")
-                        return session
-            
-            logger.debug(f"No session found for key: {redact_key_for_logging(key)}")
-            return None
+        
+        # 2. 內存中沒有，嘗試從數據庫查找（支持多 Worker 環境）
+        try:
+            db_session = await db_services.get_upload_session_by_id(upload_id)
+            if db_session:
+                logger.info(f"Found session in DB (multi-worker fallback): upload_id={upload_id}")
+                # 將數據庫記錄轉換為內存格式
+                return {
+                    "api_key": db_session["api_key"],
+                    "user_token": db_session["user_token"],
+                    "session_id": db_session.get("session_id"),
+                    "display_name": db_session.get("display_name"),
+                    "mime_type": db_session.get("mime_type"),
+                    "size_bytes": db_session.get("size_bytes"),
+                    "created_at": db_session.get("created_at"),
+                    "upload_url": db_session.get("upload_url")
+                }
+        except Exception as e:
+            logger.warning(f"Failed to query session from DB: {e}")
+        
+        logger.debug(f"No session found for key: {redact_key_for_logging(key)}")
+        return None
     
     async def get_file(self, file_name: str, user_token: str) -> FileMetadata:
         """

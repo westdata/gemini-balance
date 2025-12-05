@@ -377,8 +377,12 @@ class GeminiChatService:
                         f"Files and their keys: {[(f, redact_key_for_logging(k)) for f, k in file_api_keys.items()]}"
                     )
             else:
-                logger.warning(
-                    f"No API keys found for any files, using default key: {redact_key_for_logging(api_key)}"
+                # 没有找到任何文件的 API key，这通常意味着文件记录未正确创建
+                logger.error(
+                    f"CRITICAL: No API keys found for any of {len(file_names)} files! "
+                    f"Files: {file_names}. "
+                    f"This usually means file records were not created in database. "
+                    f"Using default key: {redact_key_for_logging(api_key)} which will likely fail."
                 )
 
         payload = _build_payload(model, request)
