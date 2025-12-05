@@ -42,30 +42,15 @@ def _extract_file_references(contents: List[Dict[str, Any]]) -> List[str]:
                 if "fileUri" not in file_data:
                     continue
                 file_uri = file_data["fileUri"]
-                
-                # 從 URI 中提取文件名，支持多種格式：
-                # 1. 代理 URL: {BASE_URL}/files/{file_id}
-                # 2. Google URL: https://generativelanguage.googleapis.com/v1beta/files/{file_id}
-                file_id = None
-                
-                # 嘗試匹配代理 URL
+                # 從 URI 中提取文件名
+                # 格式: {BASE_URL}/files/{file_id}
                 match = re.match(
                     rf"{re.escape(settings.BASE_URL)}/(files/[^/\?]+)", file_uri
                 )
-                if match:
-                    file_id = match.group(1)
-                else:
-                    # 嘗試匹配 Google 原始 URL
-                    match = re.match(
-                        r"https://generativelanguage\.googleapis\.com/v1beta/(files/[^/\?]+)", file_uri
-                    )
-                    if match:
-                        file_id = match.group(1)
-                
-                if not file_id:
-                    logger.warning(f"Could not extract file ID from URI: {file_uri}")
+                if not match:
+                    logger.warning(f"Invalid file URI: {file_uri}")
                     continue
-                    
+                file_id = match.group(1)
                 file_names.append(file_id)
                 logger.info(f"Found file reference: {file_id}")
     return file_names
