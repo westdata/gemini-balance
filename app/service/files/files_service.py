@@ -116,7 +116,8 @@ class FilesService:
                 # 3. 都沒有，獲取新的 key，並立即存數據庫防止競態條件
                 if not api_key:
                     key_manager = await self._get_key_manager()
-                    api_key = await key_manager.get_next_key()
+                    # 使用隨機有效 key 而不是輪詢，避免多實例環境下的 key 衝突
+                    api_key = await key_manager.get_random_valid_key()
                     logger.info(f"New session {session_id}, using new API key: {redact_key_for_logging(api_key)}")
                     
                     # 立即存數據庫，防止並發請求獲取不同的 key
