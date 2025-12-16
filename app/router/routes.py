@@ -10,6 +10,7 @@ from app.config.config import settings
 from app.core.security import verify_auth_token
 from app.log.logger import get_routes_logger
 from app.router import (
+    access_log_routes,
     config_routes,
     error_log_routes,
     files_routes,
@@ -45,6 +46,7 @@ def setup_routers(app: FastAPI) -> None:
     app.include_router(gemini_routes.router_v1beta)
     app.include_router(config_routes.router)
     app.include_router(error_log_routes.router)
+    app.include_router(access_log_routes.router)
     app.include_router(scheduler_routes.router)
     app.include_router(stats_routes.router)
     app.include_router(version_routes.router)

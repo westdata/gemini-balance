@@ -9,6 +9,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 # from app.middleware.request_logging_middleware import RequestLoggingMiddleware
 from app.middleware.smart_routing_middleware import SmartRoutingMiddleware
+from app.middleware.access_log_middleware import AccessLogMiddleware
 from app.core.constants import API_VERSION
 from app.core.security import verify_auth_token
 from app.log.logger import get_middleware_logger
@@ -59,6 +60,9 @@ def setup_middlewares(app: FastAPI) -> None:
 
     # 添加认证中间件
     app.add_middleware(AuthMiddleware)
+    
+    # 添加外部访问日志中间件（记录API请求并检查IP黑名单）
+    app.add_middleware(AccessLogMiddleware)
 
     # 添加请求日志中间件（可选，默认注释掉）
     # app.add_middleware(RequestLoggingMiddleware)

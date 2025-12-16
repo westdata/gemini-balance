@@ -2770,3 +2770,428 @@ function updateProxyStatusInList(results) {
 }
 
 // -- End Proxy Check Functions --
+
+// ==================== IP黑名单和访问日志功能 ====================
+
+// 黑名单相关变量
+let blacklistCurrentPage = 1;
+const BLACKLIST_PAGE_SIZE = 50;
+
+// 访问日志相关变量
+let accessLogsCurrentPage = 1;
+const ACCESS_LOGS_PAGE_SIZE = 20;
+let accessLogsTotal = 0;
+
+/**
+ * 初始化IP黑名单功能
+ */
+function initBlacklistFeature() {
+  const addBlacklistIpBtn = document.getElementById("addBlacklistIpBtn");
+  const bulkAddBlacklistBtn = document.getElementById("bulkAddBlacklistBtn");
+  const refreshBlacklistBtn = document.getElementById("refreshBlacklistBtn");
+  const viewAccessLogsBtn = document.getElementById("viewAccessLogsBtn");
+  const clearAccessLogsBtn = document.getElementById("clearAccessLogsBtn");
+  
+  if (addBlacklistIpBtn) {
+    addBlacklistIpBtn.addEventListener("click", addSingleIpToBlacklist);
+  }
+  
+  if (bulkAddBlacklistBtn) {
+    bulkAddBlacklistBtn.addEventListener("click", bulkAddIpsToBlacklist);
+  }
+  
+  if (refreshBlacklistBtn) {
+    refreshBlacklistBtn.addEventListener("click", loadBlacklist);
+  }
+  
+  if (viewAccessLogsBtn) {
+    viewAccessLogsBtn.addEventListener("click", openAccessLogsModal);
+  }
+  
+  if (clearAccessLogsBtn) {
+    clearAccessLogsBtn.addEventListener("click", clearAllAccessLogs);
+  }
+  
+  // 访问日志模态框事件
+  const accessLogsModal = document.getElementById("accessLogsModal");
+  const closeAccessLogsModalBtn = document.getElementById("closeAccessLogsModalBtn");
+  const closeAccessLogsBtn = document.getElementById("closeAccessLogsBtn");
+  const searchAccessLogsBtn = document.getElementById("searchAccessLogsBtn");
+  const accessLogsPrevBtn = document.getElementById("accessLogsPrevBtn");
+  const accessLogsNextBtn = document.getElementById("accessLogsNextBtn");
+  
+  if (closeAccessLogsModalBtn) {
+    closeAccessLogsModalBtn.addEventListener("click", () => closeModal(accessLogsModal));
+  }
+  
+  if (closeAccessLogsBtn) {
+    closeAccessLogsBtn.addEventListener("click", () => closeModal(accessLogsModal));
+  }
+  
+  if (searchAccessLogsBtn) {
+    searchAccessLogsBtn.addEventListener("click", () => {
+      accessLogsCurrentPage = 1;
+      loadAccessLogs();
+    });
+  }
+  
+  if (accessLogsPrevBtn) {
+    accessLogsPrevBtn.addEventListener("click", () => {
+      if (accessLogsCurrentPage > 1) {
+        accessLogsCurrentPage--;
+        loadAccessLogs();
+      }
+    });
+  }
+  
+  if (accessLogsNextBtn) {
+    accessLogsNextBtn.addEventListener("click", () => {
+      const totalPages = Math.ceil(accessLogsTotal / ACCESS_LOGS_PAGE_SIZE);
+      if (accessLogsCurrentPage < totalPages) {
+        accessLogsCurrentPage++;
+        loadAccessLogs();
+      }
+    });
+  }
+  
+  // 点击模态框外部关闭
+  if (accessLogsModal) {
+    window.addEventListener("click", (event) => {
+      if (event.target === accessLogsModal) {
+        closeModal(accessLogsModal);
+      }
+    });
+  }
+}
+
+/**
+ * 加载黑名单列表
+ */
+async function loadBlacklist() {
+  const container = document.getElementById("blacklistContainer");
+  const countSpan = document.getElementById("blacklistCount");
+  
+  if (!container) return;
+  
+  container.innerHTML = '<div class="text-gray-500 text-sm italic">加载中...</div>';
+  
+  try {
+    const response = await fetch(`/api/access/blacklist?limit=${BLACKLIST_PAGE_SIZE}&offset=0`);
+    if (!response.ok) throw new Error("Failed to load blacklist");
+    
+    const data = await response.json();
+    
+    if (countSpan) {
+      countSpan.textContent = `(${data.total} 个)`;
+    }
+    
+    if (data.entries.length === 0) {
+      container.innerHTML = '<div class="text-gray-500 text-sm italic">黑名单为空</div>';
+      return;
+    }
+    
+    container.innerHTML = "";
+    
+    data.entries.forEach(entry => {
+      const item = document.createElement("div");
+      item.className = "flex items-center justify-between p-2 border-b border-gray-100 hover:bg-gray-50";
+      
+      const createdAt = entry.created_at ? new Date(entry.created_at).toLocaleString() : "";
+      
+      item.innerHTML = `
+        <div class="flex-grow">
+          <span class="font-mono text-sm text-gray-800">${entry.ip_address}</span>
+          ${entry.reason ? `<span class="text-xs text-gray-500 ml-2">(${entry.reason})</span>` : ""}
+          <span class="text-xs text-gray-400 ml-2">${createdAt}</span>
+        </div>
+        <button
+          type="button"
+          class="text-red-500 hover:text-red-700 px-2 py-1 rounded transition-colors"
+          onclick="removeIpFromBlacklist('${entry.ip_address}')"
+          title="移除"
+        >
+          <i class="fas fa-times"></i>
+        </button>
+      `;
+      
+      container.appendChild(item);
+    });
+  } catch (error) {
+    console.error("Failed to load blacklist:", error);
+    container.innerHTML = '<div class="text-red-500 text-sm">加载失败</div>';
+  }
+}
+
+/**
+ * 添加单个IP到黑名单
+ */
+async function addSingleIpToBlacklist() {
+  const ipInput = document.getElementById("newBlacklistIp");
+  const reasonInput = document.getElementById("blacklistReason");
+  
+  if (!ipInput) return;
+  
+  const ip = ipInput.value.trim();
+  if (!ip) {
+    showNotification("请输入IP地址", "error");
+    return;
+  }
+  
+  // 简单的IP格式验证
+  const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
+  if (!ipRegex.test(ip)) {
+    showNotification("请输入有效的IP地址格式", "error");
+    return;
+  }
+  
+  const reason = reasonInput ? reasonInput.value.trim() : "";
+  
+  try {
+    const response = await fetch("/api/access/blacklist", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ip_address: ip, reason: reason })
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.detail || "添加失败");
+    }
+    
+    showNotification(`IP ${ip} 已添加到黑名单`, "success");
+    ipInput.value = "";
+    if (reasonInput) reasonInput.value = "";
+    loadBlacklist();
+  } catch (error) {
+    console.error("Failed to add IP to blacklist:", error);
+    showNotification(error.message || "添加失败", "error");
+  }
+}
+
+/**
+ * 批量添加IP到黑名单
+ */
+async function bulkAddIpsToBlacklist() {
+  const textarea = document.getElementById("bulkBlacklistIps");
+  const reasonInput = document.getElementById("blacklistReason");
+  
+  if (!textarea) return;
+  
+  const text = textarea.value.trim();
+  if (!text) {
+    showNotification("请输入IP地址", "error");
+    return;
+  }
+  
+  const ips = text.split("\n")
+    .map(line => line.trim())
+    .filter(line => line && /^(\d{1,3}\.){3}\d{1,3}$/.test(line));
+  
+  if (ips.length === 0) {
+    showNotification("未找到有效的IP地址", "error");
+    return;
+  }
+  
+  const reason = reasonInput ? reasonInput.value.trim() : "";
+  
+  try {
+    const response = await fetch("/api/access/blacklist/bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ip_addresses: ips, reason: reason })
+    });
+    
+    if (!response.ok) throw new Error("批量添加失败");
+    
+    const data = await response.json();
+    showNotification(`成功添加 ${data.added_count} 个IP到黑名单`, "success");
+    textarea.value = "";
+    loadBlacklist();
+  } catch (error) {
+    console.error("Failed to bulk add IPs:", error);
+    showNotification("批量添加失败", "error");
+  }
+}
+
+/**
+ * 从黑名单移除IP
+ */
+async function removeIpFromBlacklist(ip) {
+  if (!confirm(`确定要从黑名单移除 ${ip} 吗？`)) return;
+  
+  try {
+    const response = await fetch(`/api/access/blacklist/${encodeURIComponent(ip)}`, {
+      method: "DELETE"
+    });
+    
+    if (!response.ok) throw new Error("移除失败");
+    
+    showNotification(`IP ${ip} 已从黑名单移除`, "success");
+    loadBlacklist();
+  } catch (error) {
+    console.error("Failed to remove IP from blacklist:", error);
+    showNotification("移除失败", "error");
+  }
+}
+
+/**
+ * 打开访问日志模态框
+ */
+function openAccessLogsModal() {
+  const modal = document.getElementById("accessLogsModal");
+  if (modal) {
+    openModal(modal);
+    accessLogsCurrentPage = 1;
+    loadAccessLogs();
+  }
+}
+
+/**
+ * 加载访问日志
+ */
+async function loadAccessLogs() {
+  const tableBody = document.getElementById("accessLogsTableBody");
+  const paginationSpan = document.getElementById("accessLogsPagination");
+  const prevBtn = document.getElementById("accessLogsPrevBtn");
+  const nextBtn = document.getElementById("accessLogsNextBtn");
+  
+  if (!tableBody) return;
+  
+  tableBody.innerHTML = '<tr><td colspan="6" class="px-3 py-4 text-center text-gray-500">加载中...</td></tr>';
+  
+  // 获取搜索条件
+  const ipSearch = document.getElementById("accessLogIpSearch")?.value.trim() || "";
+  const modelSearch = document.getElementById("accessLogModelSearch")?.value.trim() || "";
+  const statusSearch = document.getElementById("accessLogStatusSearch")?.value.trim() || "";
+  
+  const offset = (accessLogsCurrentPage - 1) * ACCESS_LOGS_PAGE_SIZE;
+  
+  let url = `/api/access/logs?limit=${ACCESS_LOGS_PAGE_SIZE}&offset=${offset}`;
+  if (ipSearch) url += `&ip_search=${encodeURIComponent(ipSearch)}`;
+  if (modelSearch) url += `&model_search=${encodeURIComponent(modelSearch)}`;
+  if (statusSearch) url += `&status_code_search=${encodeURIComponent(statusSearch)}`;
+  
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error("Failed to load access logs");
+    
+    const data = await response.json();
+    accessLogsTotal = data.total;
+    
+    const totalPages = Math.ceil(accessLogsTotal / ACCESS_LOGS_PAGE_SIZE);
+    
+    if (paginationSpan) {
+      paginationSpan.textContent = `共 ${accessLogsTotal} 条记录，第 ${accessLogsCurrentPage} / ${totalPages || 1} 页`;
+    }
+    
+    if (prevBtn) prevBtn.disabled = accessLogsCurrentPage <= 1;
+    if (nextBtn) nextBtn.disabled = accessLogsCurrentPage >= totalPages;
+    
+    if (data.logs.length === 0) {
+      tableBody.innerHTML = '<tr><td colspan="6" class="px-3 py-4 text-center text-gray-500">暂无访问日志</td></tr>';
+      return;
+    }
+    
+    tableBody.innerHTML = "";
+    
+    data.logs.forEach(log => {
+      const row = document.createElement("tr");
+      row.className = "border-b border-gray-100 hover:bg-gray-50";
+      
+      const requestTime = log.request_time ? new Date(log.request_time).toLocaleString() : "-";
+      const statusClass = log.status_code >= 400 ? "text-red-600" : "text-green-600";
+      
+      row.innerHTML = `
+        <td class="px-3 py-2 text-gray-600 text-xs">${requestTime}</td>
+        <td class="px-3 py-2 font-mono text-sm">${log.client_ip || "-"}</td>
+        <td class="px-3 py-2 text-sm">${log.model_name || "-"}</td>
+        <td class="px-3 py-2 ${statusClass} font-medium">${log.status_code || "-"}</td>
+        <td class="px-3 py-2 text-xs text-gray-500 max-w-xs truncate" title="${log.request_path || ''}">${log.request_path || "-"}</td>
+        <td class="px-3 py-2">
+          <button
+            type="button"
+            class="text-red-500 hover:text-red-700 text-xs px-2 py-1 rounded transition-colors"
+            onclick="addIpToBlacklistFromLog('${log.client_ip}')"
+            title="加入黑名单"
+          >
+            <i class="fas fa-ban"></i>
+          </button>
+        </td>
+      `;
+      
+      tableBody.appendChild(row);
+    });
+  } catch (error) {
+    console.error("Failed to load access logs:", error);
+    tableBody.innerHTML = '<tr><td colspan="6" class="px-3 py-4 text-center text-red-500">加载失败</td></tr>';
+  }
+}
+
+/**
+ * 从访问日志中添加IP到黑名单
+ */
+async function addIpToBlacklistFromLog(ip) {
+  if (!ip || ip === "-") return;
+  
+  const reason = prompt(`确定要将 ${ip} 加入黑名单吗？\n请输入原因（可选）：`);
+  if (reason === null) return; // 用户取消
+  
+  try {
+    const response = await fetch("/api/access/blacklist", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ip_address: ip, reason: reason || "从访问日志添加" })
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.detail || "添加失败");
+    }
+    
+    showNotification(`IP ${ip} 已添加到黑名单`, "success");
+  } catch (error) {
+    console.error("Failed to add IP to blacklist:", error);
+    showNotification(error.message || "添加失败", "error");
+  }
+}
+
+/**
+ * 清空所有访问日志
+ */
+async function clearAllAccessLogs() {
+  if (!confirm("确定要清空所有访问日志吗？此操作不可撤销。")) return;
+  
+  try {
+    const response = await fetch("/api/access/logs/all", {
+      method: "DELETE"
+    });
+    
+    if (!response.ok) throw new Error("清空失败");
+    
+    showNotification("访问日志已清空", "success");
+    
+    // 如果模态框打开，刷新列表
+    const modal = document.getElementById("accessLogsModal");
+    if (modal && modal.classList.contains("show")) {
+      loadAccessLogs();
+    }
+  } catch (error) {
+    console.error("Failed to clear access logs:", error);
+    showNotification("清空失败", "error");
+  }
+}
+
+// 在DOMContentLoaded后初始化黑名单功能
+document.addEventListener("DOMContentLoaded", function() {
+  initBlacklistFeature();
+  
+  // 当切换到黑名单tab时加载数据
+  const tabButtons = document.querySelectorAll(".tab-btn");
+  tabButtons.forEach(button => {
+    button.addEventListener("click", function() {
+      if (this.getAttribute("data-tab") === "blacklist") {
+        loadBlacklist();
+      }
+    });
+  });
+});

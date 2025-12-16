@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Union
 from sqlalchemy import asc, delete, desc, func, insert, select, update
 
 from app.database.connection import database
-from app.database.models import ErrorLog, FileRecord, FileState, RequestLog, Settings, UploadSession
+from app.database.models import AccessLog, ErrorLog, FileRecord, FileState, IpBlacklist, RequestLog, Settings, UploadSession
 from app.log.logger import get_database_logger
 from app.utils.helpers import redact_key_for_logging
 
@@ -920,3 +920,290 @@ async def cleanup_expired_upload_sessions() -> int:
     except Exception as e:
         logger.error(f"Failed to cleanup expired upload sessions: {str(e)}")
         raise
+
+
+# ==================== 外部访问日志相关函数 ====================
+
+async def add_access_log(
+    client_ip: Optional[str] = None,
+    token_used: Optional[str] = None,
+    model_name: Optional[str] = None,
+    request_preview: Optional[str] = None,
+    status_code: Optional[int] = None,
+    request_path: Optional[str] = None,
+    request_method: Optional[str] = None,
+    request_time: Optional[datetime] = None,
+) -> bool:
+    """
+    添加外部访问日志
+
+    Args:
+        client_ip: 客户端IP地址
+        token_used: 使用的令牌
+        model_name: 请求的模型名称
+        request_preview: 请求内容前200字
+        status_code: 响应状态码
+        request_path: 请求路径
+        request_method: 请求方法
+        request_time: 请求时间
+
+    Returns:
+        bool: 是否添加成功
+    """
+    try:
+        log_time = request_time if request_time else datetime.now()
+        
+        query = insert(AccessLog).values(
+            request_time=log_time,
+            client_ip=client_ip,
+            token_used=token_used,
+            model_name=model_name,
+            request_preview=request_preview,
+            status_code=status_code,
+            request_path=request_path,
+            request_method=request_method,
+        )
+        await database.execute(query)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to add access log: {str(e)}")
+        return False
+
+
+async def get_access_logs(
+    limit: int = 20,
+    offset: int = 0,
+    ip_search: Optional[str] = None,
+    model_search: Optional[str] = None,
+    status_code_search: Optional[int] = None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    sort_by: str = "id",
+    sort_order: str = "desc",
+) -> List[Dict[str, Any]]:
+    """
+    获取外部访问日志列表
+
+    Args:
+        limit: 限制数量
+        offset: 偏移量
+        ip_search: IP地址搜索
+        model_search: 模型名称搜索
+        status_code_search: 状态码搜索
+        start_date: 开始日期
+        end_date: 结束日期
+        sort_by: 排序字段
+        sort_order: 排序顺序
+
+    Returns:
+        List[Dict[str, Any]]: 访问日志列表
+    """
+    try:
+        query = select(AccessLog)
+        
+        if ip_search:
+            query = query.where(AccessLog.client_ip.ilike(f"%{ip_search}%"))
+        if model_search:
+            query = query.where(AccessLog.model_name.ilike(f"%{model_search}%"))
+        if status_code_search:
+            query = query.where(AccessLog.status_code == status_code_search)
+        if start_date:
+            query = query.where(AccessLog.request_time >= start_date)
+        if end_date:
+            query = query.where(AccessLog.request_time < end_date)
+        
+        sort_column = getattr(AccessLog, sort_by, AccessLog.id)
+        if sort_order.lower() == "asc":
+            query = query.order_by(asc(sort_column))
+        else:
+            query = query.order_by(desc(sort_column))
+        
+        query = query.limit(limit).offset(offset)
+        
+        result = await database.fetch_all(query)
+        return [dict(row) for row in result]
+    except Exception as e:
+        logger.error(f"Failed to get access logs: {str(e)}")
+        raise
+
+
+async def get_access_logs_count(
+    ip_search: Optional[str] = None,
+    model_search: Optional[str] = None,
+    status_code_search: Optional[int] = None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+) -> int:
+    """
+    获取符合条件的访问日志总数
+    """
+    try:
+        query = select(func.count()).select_from(AccessLog)
+        
+        if ip_search:
+            query = query.where(AccessLog.client_ip.ilike(f"%{ip_search}%"))
+        if model_search:
+            query = query.where(AccessLog.model_name.ilike(f"%{model_search}%"))
+        if status_code_search:
+            query = query.where(AccessLog.status_code == status_code_search)
+        if start_date:
+            query = query.where(AccessLog.request_time >= start_date)
+        if end_date:
+            query = query.where(AccessLog.request_time < end_date)
+        
+        count_result = await database.fetch_one(query)
+        return count_result[0] if count_result else 0
+    except Exception as e:
+        logger.error(f"Failed to count access logs: {str(e)}")
+        raise
+
+
+async def delete_all_access_logs() -> int:
+    """
+    删除所有访问日志
+
+    Returns:
+        int: 删除的日志数量
+    """
+    total_deleted = 0
+    batch_size = 200
+    
+    try:
+        while True:
+            id_query = select(AccessLog.id).order_by(AccessLog.id).limit(batch_size)
+            rows = await database.fetch_all(id_query)
+            if not rows:
+                break
+            
+            ids = [row["id"] for row in rows]
+            delete_query = delete(AccessLog).where(AccessLog.id.in_(ids))
+            await database.execute(delete_query)
+            
+            total_deleted += len(ids)
+            if len(ids) < batch_size:
+                break
+        
+        logger.info(f"Deleted {total_deleted} access logs")
+        return total_deleted
+    except Exception as e:
+        logger.error(f"Failed to delete all access logs: {str(e)}")
+        raise
+
+
+# ==================== IP黑名单相关函数 ====================
+
+async def add_ip_to_blacklist(ip_address: str, reason: Optional[str] = None) -> bool:
+    """
+    添加IP到黑名单
+
+    Args:
+        ip_address: IP地址
+        reason: 加入黑名单的原因
+
+    Returns:
+        bool: 是否添加成功
+    """
+    try:
+        query = insert(IpBlacklist).values(
+            ip_address=ip_address,
+            reason=reason,
+            created_at=datetime.now(),
+        )
+        await database.execute(query)
+        logger.info(f"Added IP to blacklist: {ip_address}")
+        return True
+    except Exception as e:
+        # 可能是重复添加
+        logger.warning(f"Failed to add IP to blacklist (may already exist): {ip_address}, error: {str(e)}")
+        return False
+
+
+async def remove_ip_from_blacklist(ip_address: str) -> bool:
+    """
+    从黑名单移除IP
+
+    Args:
+        ip_address: IP地址
+
+    Returns:
+        bool: 是否移除成功
+    """
+    try:
+        query = delete(IpBlacklist).where(IpBlacklist.ip_address == ip_address)
+        await database.execute(query)
+        logger.info(f"Removed IP from blacklist: {ip_address}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to remove IP from blacklist: {str(e)}")
+        return False
+
+
+async def get_all_blacklisted_ips() -> List[str]:
+    """
+    获取所有黑名单IP
+
+    Returns:
+        List[str]: IP地址列表
+    """
+    try:
+        query = select(IpBlacklist.ip_address)
+        result = await database.fetch_all(query)
+        return [row["ip_address"] for row in result]
+    except Exception as e:
+        logger.error(f"Failed to get blacklisted IPs: {str(e)}")
+        return []
+
+
+async def get_blacklist_entries(
+    limit: int = 100,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    """
+    获取黑名单条目列表
+
+    Args:
+        limit: 限制数量
+        offset: 偏移量
+
+    Returns:
+        List[Dict[str, Any]]: 黑名单条目列表
+    """
+    try:
+        query = select(IpBlacklist).order_by(desc(IpBlacklist.created_at)).limit(limit).offset(offset)
+        result = await database.fetch_all(query)
+        return [dict(row) for row in result]
+    except Exception as e:
+        logger.error(f"Failed to get blacklist entries: {str(e)}")
+        raise
+
+
+async def get_blacklist_count() -> int:
+    """
+    获取黑名单条目总数
+    """
+    try:
+        query = select(func.count()).select_from(IpBlacklist)
+        result = await database.fetch_one(query)
+        return result[0] if result else 0
+    except Exception as e:
+        logger.error(f"Failed to count blacklist entries: {str(e)}")
+        return 0
+
+
+async def is_ip_in_blacklist(ip_address: str) -> bool:
+    """
+    检查IP是否在黑名单中
+
+    Args:
+        ip_address: IP地址
+
+    Returns:
+        bool: 是否在黑名单中
+    """
+    try:
+        query = select(IpBlacklist.id).where(IpBlacklist.ip_address == ip_address)
+        result = await database.fetch_one(query)
+        return result is not None
+    except Exception as e:
+        logger.error(f"Failed to check IP in blacklist: {str(e)}")
+        return False

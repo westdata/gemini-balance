@@ -129,6 +129,41 @@ class FileRecord(Base):
         return datetime.datetime.now(datetime.timezone.utc) > expiration_time
 
 
+class AccessLog(Base):
+    """
+    外部访问日志表，记录外部请求来源信息
+    """
+    __tablename__ = "t_access_logs"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    request_time = Column(DateTime, default=datetime.datetime.now, comment="请求时间")
+    client_ip = Column(String(50), nullable=True, comment="客户端IP地址")
+    token_used = Column(String(100), nullable=True, comment="使用的令牌")
+    model_name = Column(String(100), nullable=True, comment="请求的模型名称")
+    request_preview = Column(String(500), nullable=True, comment="请求内容前200字")
+    status_code = Column(Integer, nullable=True, comment="响应状态码")
+    request_path = Column(String(255), nullable=True, comment="请求路径")
+    request_method = Column(String(10), nullable=True, comment="请求方法")
+    
+    def __repr__(self):
+        return f"<AccessLog(id='{self.id}', ip='{self.client_ip}', status='{self.status_code}')>"
+
+
+class IpBlacklist(Base):
+    """
+    IP黑名单表
+    """
+    __tablename__ = "t_ip_blacklist"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ip_address = Column(String(50), nullable=False, unique=True, comment="IP地址")
+    reason = Column(String(255), nullable=True, comment="加入黑名单的原因")
+    created_at = Column(DateTime, default=datetime.datetime.now, comment="创建时间")
+    
+    def __repr__(self):
+        return f"<IpBlacklist(ip='{self.ip_address}')>"
+
+
 class UploadSession(Base):
     """
     上传会话表，用于存储文件上传过程中的临时信息

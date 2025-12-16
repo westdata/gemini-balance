@@ -5,7 +5,7 @@ from pathlib import Path
 from urllib.parse import quote_plus
 from databases import Database
 from sqlalchemy import create_engine, MetaData
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 
 from app.config.config import settings
 from app.log.logger import get_database_logger
