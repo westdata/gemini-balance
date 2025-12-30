@@ -34,6 +34,7 @@ def _replace_proxy_uris_with_google_uris(contents: List[Dict[str, Any]]) -> List
     """
     將內容中的代理 URI 替換為 Google URI
     發送到 Google API 前需要使用原始的 Google URI
+    同時將 snake_case 字段名轉換為 camelCase（Google API 要求）
     """
     import copy
     google_base = "https://generativelanguage.googleapis.com"
@@ -45,14 +46,25 @@ def _replace_proxy_uris_with_google_uris(contents: List[Dict[str, Any]]) -> List
         if "parts" not in content:
             continue
         for part in content["parts"]:
-            if not isinstance(part, dict) or "fileData" not in part:
-                continue
-            file_data = part["fileData"]
-            if "fileUri" not in file_data:
+            if not isinstance(part, dict):
                 continue
             
-            file_uri = file_data["fileUri"]
-            # 檢查是否是代理 URI（不是 Google 的原始 URI）
+            # 支持 fileData (camelCase) 和 file_data (snake_case)
+            file_data = part.get("fileData") or part.get("file_data")
+            if not file_data:
+                continue
+            
+            # 獲取 fileUri，支持兩種格式
+            file_uri = file_data.get("fileUri") or file_data.get("file_uri")
+            if not file_uri:
+                continue
+            
+            logger.debug(f"Processing fileUri: {file_uri}")
+            
+            # 構建新的 fileData（使用 camelCase，這是 Google API 要求的格式）
+            new_file_data = {}
+            
+            # 處理 URI
             if google_base not in file_uri:
                 # 提取文件路徑部分 (v1beta/files/xxx 或 files/xxx)
                 match = re.search(r"(v1beta/)?(files/[^/\?\s]+)", file_uri)
@@ -62,24 +74,46 @@ def _replace_proxy_uris_with_google_uris(contents: List[Dict[str, Any]]) -> List
                     if not file_path.startswith("v1beta/"):
                         file_path = f"v1beta/{file_path}"
                     new_uri = f"{google_base}/{file_path}"
-                    file_data["fileUri"] = new_uri
-                    logger.debug(f"Replaced proxy URI with Google URI: {file_uri} -> {new_uri}")
+                    new_file_data["fileUri"] = new_uri
+                    logger.info(f"Replaced proxy URI with Google URI: {file_uri} -> {new_uri}")
+                else:
+                    logger.warning(f"Failed to extract file path from URI: {file_uri}")
+                    new_file_data["fileUri"] = file_uri
+            else:
+                new_file_data["fileUri"] = file_uri
+                logger.debug(f"URI already points to Google: {file_uri}")
+            
+            # 處理 mimeType，支持兩種格式
+            mime_type = file_data.get("mimeType") or file_data.get("mime_type")
+            if mime_type:
+                new_file_data["mimeType"] = mime_type
+            
+            # 替換原來的 file_data/fileData 為標準的 fileData
+            if "file_data" in part:
+                del part["file_data"]
+            if "fileData" in part:
+                del part["fileData"]
+            part["fileData"] = new_file_data
     
     return modified_contents
 
 
 def _extract_file_references(contents: List[Dict[str, Any]]) -> List[str]:
-    """從內容中提取文件引用"""
+    """從內容中提取文件引用，支持 camelCase 和 snake_case"""
     file_names = []
     for content in contents:
         if "parts" in content:
             for part in content["parts"]:
-                if not isinstance(part, dict) or "fileData" not in part:
+                if not isinstance(part, dict):
                     continue
-                file_data = part["fileData"]
-                if "fileUri" not in file_data:
+                # 支持 fileData (camelCase) 和 file_data (snake_case)
+                file_data = part.get("fileData") or part.get("file_data")
+                if not file_data:
                     continue
-                file_uri = file_data["fileUri"]
+                # 支持 fileUri 和 file_uri
+                file_uri = file_data.get("fileUri") or file_data.get("file_uri")
+                if not file_uri:
+                    continue
                 # 從 URI 中提取文件名
                 # 支持多種格式:
                 # - {BASE_URL}/files/{file_id}
@@ -245,7 +279,7 @@ def _get_safety_settings(model: str) -> List[Dict[str, str]]:
 
 
 def _filter_empty_parts(contents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Filters out contents with empty or invalid parts."""
+    """Filters out contents with empty or invalid parts, and removes null role values."""
     if not contents:
         return []
 
@@ -263,11 +297,23 @@ def _filter_empty_parts(contents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         ]
 
         if valid_parts:
-            new_content = content.copy()
+            new_content = {}
+            # 只复制非 None 的字段
+            if content.get("role") is not None:
+                new_content["role"] = content["role"]
             new_content["parts"] = valid_parts
             filtered_contents.append(new_content)
 
     return filtered_contents
+
+
+def _remove_none_values(obj: Any) -> Any:
+    """递归移除字典中的 None 值"""
+    if isinstance(obj, dict):
+        return {k: _remove_none_values(v) for k, v in obj.items() if v is not None}
+    elif isinstance(obj, list):
+        return [_remove_none_values(item) for item in obj if item is not None]
+    return obj
 
 
 def _build_payload(model: str, request: GeminiRequest) -> Dict[str, Any]:
@@ -339,6 +385,9 @@ def _build_payload(model: str, request: GeminiRequest) -> Dict[str, Any]:
     # 將代理 URI 替換為 Google URI（發送到 Google API 前）
     if "contents" in payload:
         payload["contents"] = _replace_proxy_uris_with_google_uris(payload["contents"])
+
+    # 移除所有 None 值，Google API 不接受 null
+    payload = _remove_none_values(payload)
 
     return payload
 
@@ -442,8 +491,16 @@ class GeminiChatService:
             return self.response_handler.handle_response(response, model, stream=False)
         except Exception as e:
             is_success = False
-            status_code = e.args[0]
-            error_log_msg = e.args[1]
+            # 安全地从异常中提取状态码和消息
+            if hasattr(e, 'status_code'):
+                status_code = e.status_code
+                error_log_msg = getattr(e, 'detail', str(e))
+            elif len(e.args) >= 2:
+                status_code = e.args[0]
+                error_log_msg = e.args[1]
+            else:
+                status_code = 500
+                error_log_msg = str(e)
             logger.error(f"Normal API call failed with error: {error_log_msg}")
 
             await add_error_log(
@@ -489,8 +546,16 @@ class GeminiChatService:
             return response
         except Exception as e:
             is_success = False
-            status_code = e.args[0]
-            error_log_msg = e.args[1]
+            # 安全地从异常中提取状态码和消息
+            if hasattr(e, 'status_code'):
+                status_code = e.status_code
+                error_log_msg = getattr(e, 'detail', str(e))
+            elif len(e.args) >= 2:
+                status_code = e.args[0]
+                error_log_msg = e.args[1]
+            else:
+                status_code = 500
+                error_log_msg = str(e)
             logger.error(f"Count tokens API call failed with error: {error_log_msg}")
 
             await add_error_log(
@@ -577,8 +642,16 @@ class GeminiChatService:
             except Exception as e:
                 retries += 1
                 is_success = False
-                status_code = e.args[0]
-                error_log_msg = e.args[1]
+                # 安全地从异常中提取状态码和消息
+                if hasattr(e, 'status_code'):
+                    status_code = e.status_code
+                    error_log_msg = getattr(e, 'detail', str(e))
+                elif len(e.args) >= 2:
+                    status_code = e.args[0]
+                    error_log_msg = e.args[1]
+                else:
+                    status_code = 500
+                    error_log_msg = str(e)
                 logger.warning(
                     f"Streaming API call failed with error: {error_log_msg}. Attempt {retries} of {max_retries}"
                 )
