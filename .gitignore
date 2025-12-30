@@ -260,3 +260,4 @@ $RECYCLE.BIN/
 tests/
 default_db
 /gemini_file_uploader.py
+/test_google_api.py
