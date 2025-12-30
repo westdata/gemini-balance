@@ -100,6 +100,10 @@ class GeminiApiClient(ApiClient):
 
         async with httpx.AsyncClient(timeout=timeout, proxy=proxy_to_use) as client:
             url = f"{self.base_url}/models/{model}:generateContent?key={api_key}"
+            # 调试：打印发送给 Google 的 payload
+            import json as json_module
+            logger.info(f"[DEBUG] Sending to Google API: {url}")
+            logger.info(f"[DEBUG] Payload: {json_module.dumps(payload, ensure_ascii=False, indent=2)[:2000]}")
             response = await client.post(url, json=payload, headers=headers)
 
             if response.status_code != 200:

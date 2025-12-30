@@ -1,12 +1,14 @@
 import asyncio
 from copy import deepcopy
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.config.config import settings
 from app.core.constants import API_VERSION
 from app.core.security import SecurityService
+from app.database import services as db_services
 from app.domain.gemini_models import (
     GeminiBatchEmbedRequest,
     GeminiContent,
@@ -131,6 +133,8 @@ async def generate_content(
     api_key: str = Depends(get_next_working_key),
     key_manager: KeyManager = Depends(get_key_manager),
     chat_service: GeminiChatService = Depends(get_chat_service),
+    x_session_id: Optional[str] = Header(None, alias="X-Session-Id"),
+    session_id: Optional[str] = Query(None, description="Session ID for using the same API key as file uploads"),
 ):
     """处理 Gemini 非流式内容生成请求。"""
     operation_name = "gemini_generate_content"
@@ -155,6 +159,20 @@ async def generate_content(
                 logger.info("Detected native Gemini TTS request")
                 logger.info(f"TTS responseModalities: {response_modalities}")
                 logger.info(f"TTS speechConfig: {speech_config}")
+
+        # 处理 session_id：如果提供了 session_id，尝试复用该会话的 API key
+        session_id_value = x_session_id or session_id
+        if session_id_value:
+            logger.info(f"Received session_id: {session_id_value}")
+            try:
+                db_session = await db_services.get_upload_session_by_session_id(session_id_value)
+                if db_session:
+                    api_key = db_session["api_key"]
+                    logger.info(f"Using API key from session {session_id_value}: {redact_key_for_logging(api_key)}")
+                else:
+                    logger.warning(f"No session found for session_id: {session_id_value}, using default key")
+            except Exception as e:
+                logger.warning(f"Failed to get session API key: {e}, using default key")
 
         logger.info(f"Using allowed token: {allowed_token}")
         logger.info(f"Using API key: {redact_key_for_logging(api_key)}")
@@ -195,6 +213,8 @@ async def stream_generate_content(
     api_key: str = Depends(get_next_working_key),
     key_manager: KeyManager = Depends(get_key_manager),
     chat_service: GeminiChatService = Depends(get_chat_service),
+    x_session_id: Optional[str] = Header(None, alias="X-Session-Id"),
+    session_id: Optional[str] = Query(None, description="Session ID for using the same API key as file uploads"),
 ):
     """处理 Gemini 流式内容生成请求。"""
     operation_name = "gemini_stream_generate_content"
@@ -205,6 +225,21 @@ async def stream_generate_content(
             f"Handling Gemini streaming content generation for model: {model_name}"
         )
         logger.debug(f"Request: \n{request.model_dump_json(indent=2)}")
+        
+        # 处理 session_id：如果提供了 session_id，尝试复用该会话的 API key
+        session_id_value = x_session_id or session_id
+        if session_id_value:
+            logger.info(f"Received session_id: {session_id_value}")
+            try:
+                db_session = await db_services.get_upload_session_by_session_id(session_id_value)
+                if db_session:
+                    api_key = db_session["api_key"]
+                    logger.info(f"Using API key from session {session_id_value}: {redact_key_for_logging(api_key)}")
+                else:
+                    logger.warning(f"No session found for session_id: {session_id_value}, using default key")
+            except Exception as e:
+                logger.warning(f"Failed to get session API key: {e}, using default key")
+        
         logger.info(f"Using allowed token: {allowed_token}")
         logger.info(f"Using API key: {redact_key_for_logging(api_key)}")
 
